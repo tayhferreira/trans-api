@@ -1,64 +1,94 @@
 name: CI/CD Purchase API
+
 on:
   push:
     branches:
       - main
+      - feature/relatorio
+
 jobs:
   test:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '25'
-      - name: Gradle permission
+          cache: gradle
+
+      - name: Grant execute permission
         run: chmod +x gradlew
+
       - name: Run tests
         run: ./gradlew clean test
+
   build-and-deploy:
     needs: test
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '25'
-      - name: Gradle permission
+          cache: gradle
+
+      - name: Grant execute permission
         run: chmod +x gradlew
+
       - name: Build application
         run: ./gradlew clean build
+
       - name: Login to Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ secrets.REGISTRY_SERVER }}
           username: ${{ secrets.REGISTRY_USER }}
           password: ${{ secrets.REGISTRY_PASSWORD }}
+
       - name: Build Docker image
-        run: docker build -t ${{ secrets.REGISTRY_SERVER }}/trans-api/purchase-api:${{ github.sha }} .
+        run: |
+          docker build -t ${{ secrets.REGISTRY_SERVER }}/trans-api/trans-api:${{ github.sha }} .
+
       - name: Push Docker image
-        run: docker push ${{ secrets.REGISTRY_SERVER }}/trans-api/purchase-api:${{ github.sha }}
+        run: |
+          docker push ${{ secrets.REGISTRY_SERVER }}/trans-api/trans-api:${{ github.sha }}
+
       - name: Configure kubeconfig
         env:
           KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
         run: |
-          echo "$KUBECONFIG_B64" | base64 --decode > kubeconfig
-          echo "KUBECONFIG=${{ github.workspace }}/kubeconfig" >> $GITHUB_ENV
+          mkdir -p ~/.kube
+          echo "$KUBECONFIG_B64" | base64 --decode > ~/.kube/config
+
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
-      - name: Create/update registry pull secret
+
+      - name: Create/Update Registry Secret
         run: |
           kubectl create secret docker-registry mgc-registry \
             --docker-server=${{ secrets.REGISTRY_SERVER }} \
             --docker-username=${{ secrets.REGISTRY_USER }} \
             --docker-password=${{ secrets.REGISTRY_PASSWORD }} \
             --dry-run=client -o yaml | kubectl apply -f -
+
       - name: Replace image placeholder
-        run: sed -i "s|DOCKER_IMAGE_PLACEHOLDER|${{ secrets.REGISTRY_SERVER }}/trans-api/purchase-api:${{ github.sha }}|g" k3s/app-puchase-transaction.yml
+        run: |
+          sed -i "s|DOCKER_IMAGE_PLACEHOLDER|${{ secrets.REGISTRY_SERVER }}/trans-api/trans-api:${{ github.sha }}|g" k3s/app-purchase-transaction.yml
+
       - name: Deploy to Kubernetes
-        run: kubectl apply -f k3s/app-puchase-transaction.yml
+        run: |
+          kubectl apply -f k3s/app-purchase-transaction.yml
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/purchase-api --timeout=180s
